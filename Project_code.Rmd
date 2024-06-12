@@ -1,0 +1,220 @@
+---
+title: "Linear_non_linear_project"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##lOADING ALL THE PACKAGES
+```{r}
+rm(list=ls(all=TRUE))
+
+library(glmnet)
+library(caret)
+library(MASS)
+library(vegan)
+library(data.table)
+library(doParallel)
+library(DMwR)
+library(dummies)
+library(e1071)
+library(standardize)
+library(ggplot2)
+library(arules)
+```
+
+## Reading the various datasets
+
+```{r }
+setwd("~/Linear and Non Linear/Data")
+one=read.csv("Train.csv",na.strings=c("","NA"))
+two=read.csv("Train_Claim.csv",na.strings=c("","NA"))
+three=read.csv("Train_Demographics.csv",na.strings=c("","NA"))
+four=read.csv("Train_Policy.csv",na.strings=c("","NA"))
+five=read.csv("Train_Vehicle.csv")
+```
+
+```{r}
+#Converting all the missing values to NA
+
+#for Data of VEhicle
+five$VehicleAttributeDetails=as.factor(ifelse(five$VehicleAttributeDetails=="???",NA,five$VehicleAttributeDetails))
+
+#for Claim INformation
+two$TypeOfCollission=as.factor(ifelse(two$TypeOfCollission=="?",NA,two$TypeOfCollission))
+two$IncidentTime=as.factor(ifelse(two$IncidentTime=="-5",NA,two$IncidentTime))
+two$PropertyDamage=as.factor(ifelse(two$PropertyDamage=="?",NA,two$PropertyDamage))
+two$Witnesses=as.factor(ifelse(two$Witnesses=="MISSINGVALUE",NA,two$Witnesses))
+two$PoliceReport=as.factor(ifelse(two$PoliceReport=="?",NA,two$PoliceReport))
+two$AmountOfTotalClaim=(ifelse(two$AmountOfTotalClaim=="MISSEDDATA",NA,two$AmountOfTotalClaim))
+
+#for policy  INFORMATIOn
+four$PolicyAnnualPremium=(ifelse(four$PolicyAnnualPremium=="-1",NA,four$PolicyAnnualPremium))
+```
+
+```{r}
+colSums(is.na(five))
+colSums(is.na(two))
+colSums(is.na(four))
+colSums(is.na(three))
+```
+
+
+
+### Vehicle table has its attribute in a the vertical format, so connverting it into the horizontal format
+```{r}
+five_one=five[five$VehicleAttribute %in% c("VehicleID"),]
+five_one$VehicleAttributeDetails=as.factor(as.character(five_one$VehicleAttributeDetails))
+five_one=five_one[,-2]
+str(five_one)       # we can delete Five_one i.e VEHICLE ID as iT OBVIOUSLY HAS all different factors
+
+five_two=five[five$VehicleAttribute %in% c("VehicleMake"),] 
+five_two$VehicleAttributeDetails2=as.factor(as.character(five_two$VehicleAttributeDetails))
+str(five_two)
+five_two=five_two[,c(-2,-3)]
+five_three=five[five$VehicleAttribute %in% c("VehicleModel"),] 
+five_three$VehicleAttributeDetails3=as.factor(as.character(five_three$VehicleAttributeDetails))
+five_three=five_three[,c(-2,-3)]
+five_four=five[five$VehicleAttribute %in% c("VehicleYOM"),]
+five_four$VehicleAttributeDetails4=as.factor(as.character(five_four$VehicleAttributeDetails))
+five_four=five_four[,c(-2,-3)]
+str(five_four)
+```
+
+
+#merging all the csv files
+```{r}
+merge1 <- merge(five_three,five_two,by="CustomerID")
+merge2 <- merge(merge1,five_four,by="CustomerID")
+merge3 <- merge(merge2,four,by="CustomerID")
+merge4 <- merge(merge3,three,by="CustomerID")
+total <- merge(merge4,two,by="CustomerID")
+total$InsurancePolicyNumber=as.factor(total$InsurancePolicyNumber)
+#deleting customer ID and insurance policy number 
+total=total[,setdiff(names(total),c("InsurancePolicyNumber","Country","AmountOfPropertyClaim_disc","AmountOfTotalClaim_disc","AmountOfInjuryClaim_disc"))]
+total$InsuredZipCode=as.factor(as.integer(total$InsuredZipCode/1000))
+str(total)
+```
+
+```{r}
+#trying to fill NA's of insured gender using insured relationship
+total$InsuredGender=as.factor(ifelse(total$InsuredRelationship=="wife","2",total$InsuredGender))
+total$InsuredGender=as.factor(ifelse(total$InsuredRelationship=="husband","1",total$InsuredGender))
+
+#Central imputation on the enitre dataset
+finaldata=centralImputation(total)
+```
+
+###feature engineering
+```{r}
+#finding the number of days incident happened before accident
+finaldata$DateOfIncident=as.Date(finaldata$DateOfIncident, format = "%Y-%m-%d")
+finaldata$DateOfPolicyCoverage=as.Date(finaldata$DateOfPolicyCoverage, format = "%Y-%m-%d")
+finaldata$incident_coverage=as.integer(finaldata$DateOfIncident-finaldata$DateOfPolicyCoverage)
+finaldata$daysremainingforinsurance=finaldata$InsuredAge*365-finaldata$incident_coverage
+final <- merge(one,finaldata,by="CustomerID")
+final=final[,-1]
+str(final)
+```
+
+#Distribution of y variable
+```{r}
+table(final$ReportedFraud)
+
+```
+
+###Checking for correlation between the numeric variables
+
+```{r}
+nums <- unlist(lapply(final, is.numeric))  
+numeric_data = final[,nums]
+cor = round(cor(numeric_data),1)
+cor[upper.tri(cor)] = " "
+cat("Correlation Plot\n")
+cor
+
+```
+
+
+###Visualization
+
+
+### Density plot for numeric variables
+###Visualizing all the variables V/s the target variable
+```{r}
+
+for(i in 1:14){
+  par(mfrow=c(2,2))
+  print(ggplot(cbind(numeric_data,final$ReportedFraud), aes_string(x = colnames(numeric_data)[i], fill = "final$ReportedFraud")) +
+          geom_density(alpha = 0.5) + 
+          labs(title = colnames(numeric_data)[i], 
+               x = paste("x",i,sep=""), 
+               y = "Density", 
+               col = "ReportedFraud"))
+}
+
+```
+
+#### Binned variables V/s target
+```{r}
+library(scorecard)
+data = final[,setdiff(names(final),c("InsuredZipCode","IncidentAddress","AmountOfTotalClaim"))]
+woe_bins = scorecard::woebin(data, y="ReportedFraud", method="tree",positive = "Y",bin_num_limit = 4)
+data_binned = scorecard::woebin_ply(data,woe_bins)  
+plots_demog=scorecard::woebin_plot(woe_bins, x = NULL, title = NULL, show_iv = TRUE)
+par(mfrow=c(2,2))
+plots_demog
+```
+
+### Train Test split
+```{r}
+set.seed(1234)
+final$ReportedFraud = as.factor(final$ReportedFraud)
+Train_ID=caret::createDataPartition(final$ReportedFraud,p=0.8,list = F)
+Train_data = final[Train_ID,]
+Test_data = final[-Train_ID,]
+Train_data_binned = data[Train_ID,]
+Test_data_binned = data[-Train_ID,]
+```
+
+```{r}
+library(h2o)
+h2o.init()
+finaldata.h2o=as.h2o(Train_data)
+finaltest.h2o=as.h2o(Test_data)
+y.dep<-1
+x.indep<-2:40
+```
+
+```{r}
+xgboost.model = h2o.xgboost(x = x.indep,
+                           y = y.dep,
+                           training_frame = finaldata.h2o,
+                           validation_frame = finaltest.h2o,
+                           booster = "gbtree",
+                           seed = 1234,
+                           nfolds = 5,
+                           distribution="bernoulli",
+                           eta = 0.151,
+                           max_depth = 10,
+                           sample_rate = 1,
+                           col_sample_rate=1)
+h2o.auc(h2o.performance(xgboost.model))
+perf <- h2o.performance(xgboost.model, finaltest.h2o)
+perf
+
+```
+
+```{r}
+h2o.varimp(xgboost.model)
+```
+
+```{r}
+glm.model <- h2o.glm(y=y.dep, x=x.indep, training_frame = finaldata.h2o, family = "binomial",nfolds=5)
+h2o.auc(h2o.performance(glm.model))
+#predict.dl2 <- as.data.frame(h2o.predict(gbm.model, finaltest.h2o))
+perf <- h2o.performance(glm.model, finaltest.h2o)
+perf
+```
